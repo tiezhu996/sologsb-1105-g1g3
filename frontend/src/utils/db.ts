@@ -2,7 +2,8 @@ import Dexie, { type Table } from 'dexie'
 import type { NameHistory } from '../types/history'
 import type { PlacePair } from '../types/placePair'
 import type { ScanItem } from '../types/scan'
-import type { Sheet } from '../types/sheet'
+import type { NeighborMap, Sheet } from '../types/sheet'
+import { NEIGHBOR_DIRECTIONS } from '../types/sheet'
 
 const sheets: Sheet[] = [
   {
@@ -405,6 +406,35 @@ class GboldmapDatabase extends Dexie {
           .toCollection()
           .modify((sheet: Sheet & { schemaRev?: number }) => {
             sheet.schemaRev = 2
+          })
+      })
+
+    // 邻接登记由“按顺序填一个图号框”改为分方向登记：
+    // 旧 neighborCodes 仍按东、南、西、北、东北、西南的顺序回填到 neighbors。
+    this.version(3)
+      .stores({
+        sheets: 'id, code, year, scale, status, series',
+        scans: 'id, sheetId, importedAt, quality',
+        placePairs: 'id, sheetId, oldName, newName, placeType, certainty',
+        histories: 'id, placePairId, period, changeType',
+      })
+      .upgrade(async (transaction) => {
+        await transaction
+          .table<Sheet, string>('sheets')
+          .toCollection()
+          .modify((sheet: Sheet) => {
+            if (sheet.neighbors && Object.values(sheet.neighbors).some(Boolean)) {
+              return
+            }
+            const neighbors: NeighborMap = {}
+            ;(sheet.neighborCodes ?? []).forEach((code, index) => {
+              const direction = NEIGHBOR_DIRECTIONS[index]
+              const trimmed = code?.trim()
+              if (direction && trimmed) {
+                neighbors[direction] = trimmed
+              }
+            })
+            sheet.neighbors = neighbors
           })
       })
 

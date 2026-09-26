@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useSheetStore, type NewSheet } from '../stores/sheetStore'
+import { useSheetStore, type NeighborConflict, type NewSheet } from '../stores/sheetStore'
 import type { Sheet, SheetScale, SheetStatus } from '../types/sheet'
-import { SHEET_SCALES, SHEET_STATUSES } from '../types/sheet'
+import { NEIGHBOR_DIRECTIONS, SHEET_SCALES, SHEET_STATUSES, type NeighborDirection } from '../types/sheet'
 import { useSheetNeighbors } from '../hooks/useSheetNeighbors'
 import { scaleToText } from '../utils/scale'
 import ScaleTag from '../components/common/ScaleTag.vue'
@@ -17,6 +17,10 @@ const statusFilter = ref<SheetStatus | '全部'>('全部')
 const showCreateForm = ref(false)
 const formError = ref('')
 
+function createEmptyNeighborForm(): Record<NeighborDirection, string> {
+  return { 东: '', 南: '', 西: '', 北: '', 东北: '', 西南: '' }
+}
+
 function createEmptyForm(): NewSheet {
   return {
     code: '',
@@ -26,12 +30,21 @@ function createEmptyForm(): NewSheet {
     projection: '三角测量 · 平面图',
     sheetSizeCm: '58 × 46 厘米',
     series: '新编图组',
-    neighborCodes: [],
+    neighbors: {},
     status: '待编',
   }
 }
 
 const form = reactive<NewSheet>(createEmptyForm())
+const neighborForm = reactive<Record<NeighborDirection, string>>(createEmptyNeighborForm())
+
+interface RegistrationNotice {
+  sheetCode: string
+  conflicts: NeighborConflict[]
+  missingCodes: string[]
+}
+
+const registrationNotice = ref<RegistrationNotice | null>(null)
 
 const years = computed(() => [...new Set(sheetStore.sheets.map((sheet) => sheet.year))].sort((a, b) => b - a))
 
@@ -49,21 +62,22 @@ function neighborSummary(sheet: Sheet): string {
   if (status.adjacentCount === 0) {
     return '尚未登记邻接图'
   }
-  if (status.missingCodes.length === 0) {
-    return `邻接图 ${status.adjacentCount} 幅，馆藏齐备`
+  const parts = [`邻接图 ${status.adjacentCount} 幅`]
+  if (status.missingCodes.length) {
+    parts.push(`缺 ${status.missingCodes.join('、')}`)
   }
-  return `邻接图 ${status.adjacentCount} 幅，缺 ${status.missingCodes.join('、')}`
-}
-
-function updateNeighborCodes(event: Event): void {
-  const target = event.target
-  if (target instanceof HTMLInputElement) {
-    form.neighborCodes = target.value.split('、').filter(Boolean)
+  if (status.mismatches.length) {
+    parts.push(`${status.mismatches.length} 处对不上`)
   }
+  if (!status.missingCodes.length && !status.mismatches.length) {
+    parts.push('馆藏齐备')
+  }
+  return parts.join('，')
 }
 
 function resetForm(): void {
   Object.assign(form, createEmptyForm())
+  Object.assign(neighborForm, createEmptyNeighborForm())
   formError.value = ''
 }
 
@@ -72,15 +86,28 @@ async function submitSheet(): Promise<void> {
     formError.value = '请填写图幅号、题名、年代与投影方式。'
     return
   }
-  await sheetStore.addSheet({
+  const neighbors: Partial<Record<NeighborDirection, string>> = {}
+  for (const direction of NEIGHBOR_DIRECTIONS) {
+    const code = neighborForm[direction].trim()
+    if (code) {
+      neighbors[direction] = code
+    }
+  }
+  const result = await sheetStore.addSheet({
     ...form,
     code: form.code.trim(),
     title: form.title.trim(),
     projection: form.projection.trim(),
     series: form.series.trim() || '未分组',
+    neighbors,
   })
   resetForm()
   showCreateForm.value = false
+  registrationNotice.value = {
+    sheetCode: result.sheet.code,
+    conflicts: result.conflicts,
+    missingCodes: result.missingCodes,
+  }
 }
 
 onMounted(() => {
@@ -147,21 +174,52 @@ onMounted(() => {
         <el-form-item label="图幅尺寸">
           <input v-model="form.sheetSizeCm" class="native-field" placeholder="例如：58 × 46 厘米" />
         </el-form-item>
-        <el-form-item label="邻接图号">
-          <input
-            :value="form.neighborCodes?.join('、')"
-            class="native-field"
-            placeholder="多个图号用中文顿号分隔"
-            @input="updateNeighborCodes"
-          />
-        </el-form-item>
-        <div class="form-actions">
-          <el-button @click="showCreateForm = false; resetForm()">取消</el-button>
-          <el-button type="primary" native-type="submit" data-testid="submit-sheet">保存图幅</el-button>
+      </div>
+
+      <div class="neighbor-form-block">
+        <h3>四至邻接登记</h3>
+        <p class="muted">按东、南、西、北、东北、西南分别填图号；保存后对侧图幅的相反方向会自动补登本图。</p>
+        <div class="neighbor-form-grid">
+          <el-form-item v-for="direction in NEIGHBOR_DIRECTIONS" :key="direction" :label="`${direction}邻图号`">
+            <input
+              v-model="neighborForm[direction]"
+              class="native-field"
+              :data-testid="`field-neighbor-${direction}`"
+              :placeholder="`${direction}方向相邻图幅号`"
+            />
+          </el-form-item>
         </div>
+      </div>
+
+      <div class="form-actions">
+        <el-button @click="showCreateForm = false; resetForm()">取消</el-button>
+        <el-button type="primary" native-type="submit" data-testid="submit-sheet">保存图幅</el-button>
       </div>
       <p v-if="formError" class="text-danger">{{ formError }}</p>
     </form>
+
+    <el-alert
+      v-if="registrationNotice"
+      :closable="true"
+      :type="registrationNotice.conflicts.length || registrationNotice.missingCodes.length ? 'warning' : 'success'"
+      :title="`图幅 ${registrationNotice.sheetCode} 已保存，邻接关系已登记。`"
+      class="neighbor-register-notice"
+      show-icon
+      @close="registrationNotice = null"
+    >
+      <ul class="neighbor-register-notice__list">
+        <li v-for="conflict in registrationNotice.conflicts" :key="`c-${conflict.neighborCode}-${conflict.direction}`">
+          {{ conflict.neighborCode }} 的{{ conflict.oppositeDirection }}邻原已登记为
+          <strong>{{ conflict.existingCode }}</strong>，与本图（{{ registrationNotice.sheetCode }}）对不上，未覆盖原记录，请人工核对。
+        </li>
+        <li v-if="registrationNotice.missingCodes.length">
+          缺编图号 {{ registrationNotice.missingCodes.join('、') }} 尚未建卡，无法反向补登，补图后请再核接边。
+        </li>
+        <li v-if="!registrationNotice.conflicts.length && !registrationNotice.missingCodes.length">
+          各对侧图幅的反向邻接关系均已自动补登。
+        </li>
+      </ul>
+    </el-alert>
 
     <div class="filter-bar">
       <span class="muted">筛选：</span>
