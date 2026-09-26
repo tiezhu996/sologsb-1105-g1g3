@@ -763,6 +763,25 @@ mark {
   border-radius: 10px;
 }
 
+.neighbor-register {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.neighbor-register .native-field {
+  flex: 1;
+}
+
+.registration-alert {
+  margin-top: 12px;
+}
+
+.registration-alert + .registration-alert {
+  margin-top: 10px;
+}
+
 .neighbor-slot {
   padding: 14px;
   background: rgba(249, 244, 235, 0.95);

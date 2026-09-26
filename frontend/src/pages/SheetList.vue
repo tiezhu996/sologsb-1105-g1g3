@@ -2,8 +2,9 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useSheetStore, type NewSheet } from '../stores/sheetStore'
 import type { Sheet, SheetScale, SheetStatus } from '../types/sheet'
-import { SHEET_SCALES, SHEET_STATUSES } from '../types/sheet'
+import { NEIGHBOR_DIRECTIONS, SHEET_SCALES, SHEET_STATUSES, type NeighborDirection } from '../types/sheet'
 import { useSheetNeighbors } from '../hooks/useSheetNeighbors'
+import { describeRegistration, type NeighborRegistration } from '../utils/neighbors'
 import { scaleToText } from '../utils/scale'
 import ScaleTag from '../components/common/ScaleTag.vue'
 import VacantHint from '../components/common/VacantHint.vue'
@@ -16,6 +17,7 @@ const scaleFilter = ref<SheetScale | '全部'>('全部')
 const statusFilter = ref<SheetStatus | '全部'>('全部')
 const showCreateForm = ref(false)
 const formError = ref('')
+const registrationResults = ref<NeighborRegistration[]>([])
 
 function createEmptyForm(): NewSheet {
   return {
@@ -26,12 +28,16 @@ function createEmptyForm(): NewSheet {
     projection: '三角测量 · 平面图',
     sheetSizeCm: '58 × 46 厘米',
     series: '新编图组',
-    neighborCodes: [],
     status: '待编',
   }
 }
 
+function createEmptyNeighborDraft(): Record<NeighborDirection, string> {
+  return { 东: '', 南: '', 西: '', 北: '', 东北: '', 西南: '' }
+}
+
 const form = reactive<NewSheet>(createEmptyForm())
+const neighborDraft = reactive<Record<NeighborDirection, string>>(createEmptyNeighborDraft())
 
 const years = computed(() => [...new Set(sheetStore.sheets.map((sheet) => sheet.year))].sort((a, b) => b - a))
 
@@ -55,16 +61,20 @@ function neighborSummary(sheet: Sheet): string {
   return `邻接图 ${status.adjacentCount} 幅，缺 ${status.missingCodes.join('、')}`
 }
 
-function updateNeighborCodes(event: Event): void {
-  const target = event.target
-  if (target instanceof HTMLInputElement) {
-    form.neighborCodes = target.value.split('、').filter(Boolean)
-  }
-}
-
 function resetForm(): void {
   Object.assign(form, createEmptyForm())
+  Object.assign(neighborDraft, createEmptyNeighborDraft())
   formError.value = ''
+}
+
+function registrationAlertType(outcome: NeighborRegistration['outcome']): 'success' | 'warning' | 'error' {
+  if (outcome === 'conflict') {
+    return 'error'
+  }
+  if (outcome === 'missing') {
+    return 'warning'
+  }
+  return 'success'
 }
 
 async function submitSheet(): Promise<void> {
@@ -72,13 +82,26 @@ async function submitSheet(): Promise<void> {
     formError.value = '请填写图幅号、题名、年代与投影方式。'
     return
   }
-  await sheetStore.addSheet({
+  const filledDirections = NEIGHBOR_DIRECTIONS.filter((direction) => neighborDraft[direction].trim())
+  if (filledDirections.some((direction) => neighborDraft[direction].trim() === form.code.trim())) {
+    formError.value = '邻接图号不能与本图幅号相同。'
+    return
+  }
+  const sheet = await sheetStore.addSheet({
     ...form,
     code: form.code.trim(),
     title: form.title.trim(),
     projection: form.projection.trim(),
     series: form.series.trim() || '未分组',
   })
+  const results: NeighborRegistration[] = []
+  for (const direction of filledDirections) {
+    const result = await sheetStore.registerNeighbor(sheet.id, direction, neighborDraft[direction])
+    if (result) {
+      results.push(result)
+    }
+  }
+  registrationResults.value = results
   resetForm()
   showCreateForm.value = false
 }
@@ -147,12 +170,16 @@ onMounted(() => {
         <el-form-item label="图幅尺寸">
           <input v-model="form.sheetSizeCm" class="native-field" placeholder="例如：58 × 46 厘米" />
         </el-form-item>
-        <el-form-item label="邻接图号">
+        <el-form-item
+          v-for="direction in NEIGHBOR_DIRECTIONS"
+          :key="direction"
+          :label="`${direction}邻图号`"
+        >
           <input
-            :value="form.neighborCodes?.join('、')"
+            v-model="neighborDraft[direction]"
             class="native-field"
-            placeholder="多个图号用中文顿号分隔"
-            @input="updateNeighborCodes"
+            :data-testid="`field-neighbor-${direction}`"
+            placeholder="该方向无邻图可留空"
           />
         </el-form-item>
         <div class="form-actions">
@@ -160,8 +187,25 @@ onMounted(() => {
           <el-button type="primary" native-type="submit" data-testid="submit-sheet">保存图幅</el-button>
         </div>
       </div>
+      <p class="muted">按方向登记后，对家图幅的相反方向会自动补登本幅；对不上时保留原记录并提示。</p>
       <p v-if="formError" class="text-danger">{{ formError }}</p>
     </form>
+
+    <div v-if="registrationResults.length" class="inline-form" data-testid="neighbor-results">
+      <h2>邻接登记结果</h2>
+      <el-alert
+        v-for="(result, index) in registrationResults"
+        :key="index"
+        :title="describeRegistration(result)"
+        :type="registrationAlertType(result.outcome)"
+        show-icon
+        :closable="false"
+        class="registration-alert"
+      />
+      <div class="form-actions">
+        <el-button @click="registrationResults = []">知道了</el-button>
+      </div>
+    </div>
 
     <div class="filter-bar">
       <span class="muted">筛选：</span>

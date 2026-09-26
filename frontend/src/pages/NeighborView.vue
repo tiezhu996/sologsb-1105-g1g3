@@ -1,8 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useSheetStore } from '../stores/sheetStore'
-import { useSheetNeighbors, type NeighborDirection, type NeighborEntry } from '../hooks/useSheetNeighbors'
+import {
+  NEIGHBOR_DIRECTIONS,
+  useSheetNeighbors,
+  type NeighborDirection,
+  type NeighborEntry,
+} from '../hooks/useSheetNeighbors'
+import { describeRegistration } from '../utils/neighbors'
 import type { ScanItem } from '../types/scan'
 import ScanCard from '../components/common/ScanCard.vue'
 import ScaleTag from '../components/common/ScaleTag.vue'
@@ -14,6 +20,11 @@ const sheetId = computed(() => String(route.params.id ?? ''))
 const { status } = useSheetNeighbors(sheetId)
 const source = computed(() => status.value.source)
 
+const registerDirection = ref<NeighborDirection>('东')
+const registerCode = ref('')
+const registerMessage = ref('')
+const registerMessageType = ref<'success' | 'warning' | 'error'>('success')
+
 function entryAt(direction: NeighborDirection): NeighborEntry | undefined {
   return status.value.entries.find((entry) => entry.direction === direction)
 }
@@ -23,6 +34,32 @@ function primaryScan(sheetIdToFind: string): ScanItem | undefined {
 }
 
 const sourcePrimaryScan = computed(() => (source.value ? primaryScan(source.value.id) : undefined))
+
+async function submitNeighbor(): Promise<void> {
+  const current = source.value
+  if (!current) {
+    return
+  }
+  const code = registerCode.value.trim()
+  if (!code) {
+    registerMessageType.value = 'warning'
+    registerMessage.value = '请填写邻接图幅号。'
+    return
+  }
+  if (code === current.code) {
+    registerMessageType.value = 'error'
+    registerMessage.value = '邻接图号不能是本图幅自己。'
+    return
+  }
+  const result = await sheetStore.registerNeighbor(current.id, registerDirection.value, code)
+  if (!result) {
+    return
+  }
+  registerMessageType.value =
+    result.outcome === 'conflict' ? 'error' : result.outcome === 'missing' ? 'warning' : 'success'
+  registerMessage.value = describeRegistration(result)
+  registerCode.value = ''
+}
 
 async function initialize(): Promise<void> {
   await sheetStore.init()
@@ -58,6 +95,36 @@ onMounted(() => {
         <strong>{{ status.missingCodes.length }}</strong><small>幅</small>
       </div>
     </div>
+
+    <form class="inline-form" data-testid="form-neighbor" @submit.prevent="submitNeighbor">
+      <h2>按方向登记邻接图幅</h2>
+      <div class="neighbor-register">
+        <el-select v-model="registerDirection" style="width: 130px" aria-label="邻接方向" data-testid="field-neighbor-direction">
+          <el-option
+            v-for="direction in NEIGHBOR_DIRECTIONS"
+            :key="direction"
+            :label="`${direction}邻`"
+            :value="direction"
+          />
+        </el-select>
+        <input
+          v-model="registerCode"
+          class="native-field"
+          data-testid="field-neighbor-code"
+          placeholder="邻接图幅号，例如：北平-乙-3"
+        />
+        <el-button type="primary" native-type="submit" data-testid="submit-neighbor">登记邻接</el-button>
+      </div>
+      <p class="muted">登记后，对家图幅的相反方向会自动补登本幅；若对家该方向已写着别的图号，将保留原记录并提示对不上。</p>
+      <el-alert
+        v-if="registerMessage"
+        :title="registerMessage"
+        :type="registerMessageType"
+        show-icon
+        class="registration-alert"
+        @close="registerMessage = ''"
+      />
+    </form>
 
     <div class="neighbor-map">
       <article class="neighbor-slot slot-north">

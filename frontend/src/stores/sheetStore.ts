@@ -1,12 +1,18 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import type { ScanItem } from '../types/scan'
-import type { Sheet } from '../types/sheet'
+import type { NeighborDirection, NeighborMap, Sheet } from '../types/sheet'
 import { createId, db, plain } from '../utils/db'
 import { sortByYear } from '../utils/scale'
+import {
+  reciprocalOf,
+  recordedNeighborAt,
+  type NeighborRegistration,
+} from '../utils/neighbors'
 
-export type NewSheet = Omit<Sheet, 'id' | 'neighborCodes'> & {
+export type NewSheet = Omit<Sheet, 'id' | 'neighborCodes' | 'neighborMap'> & {
   neighborCodes?: string[]
+  neighborMap?: NeighborMap
 }
 export type NewScanItem = Omit<ScanItem, 'id'>
 
@@ -54,6 +60,57 @@ export const useSheetStore = defineStore('sheet', () => {
     sheets.value = sortByYear([...sheets.value, sheet]).reverse()
     currentSheet.value = sheet
     return sheet
+  }
+
+  async function persistNeighborMap(sheetId: string, neighborMap: NeighborMap): Promise<void> {
+    await db.sheets.update(sheetId, { neighborMap: plain(neighborMap) })
+    sheets.value = sheets.value.map((sheet) =>
+      sheet.id === sheetId ? { ...sheet, neighborMap } : sheet,
+    )
+    if (currentSheet.value?.id === sheetId) {
+      currentSheet.value = { ...currentSheet.value, neighborMap }
+    }
+  }
+
+  /**
+   * 按方向登记邻接图号：本幅该方向按整理员的显式填写记录，
+   * 同时在对家图幅的相反方向自动补登本幅；对家该方向若已写着
+   * 别的图号，则不覆盖、保留原记录并返回 conflict 提示核对。
+   */
+  async function registerNeighbor(
+    sheetId: string,
+    direction: NeighborDirection,
+    rawCode: string,
+  ): Promise<NeighborRegistration | null> {
+    await init()
+    const code = rawCode.trim()
+    const source = getSheetById(sheetId)
+    if (!source || !code || code === source.code) {
+      return null
+    }
+    const reciprocalDirection = reciprocalOf(direction)
+
+    const sourceMap: NeighborMap = { ...(source.neighborMap ?? {}), [direction]: code }
+    await persistNeighborMap(source.id, sourceMap)
+
+    const target = getSheetByCode(code)
+    if (!target) {
+      return { direction, code, reciprocalDirection, outcome: 'missing' }
+    }
+
+    const existing = recordedNeighborAt(target, reciprocalDirection)
+    if (!existing) {
+      const targetMap: NeighborMap = {
+        ...(target.neighborMap ?? {}),
+        [reciprocalDirection]: source.code,
+      }
+      await persistNeighborMap(target.id, targetMap)
+      return { direction, code, reciprocalDirection, outcome: 'linked' }
+    }
+    if (existing === source.code) {
+      return { direction, code, reciprocalDirection, outcome: 'already-linked' }
+    }
+    return { direction, code, reciprocalDirection, outcome: 'conflict', keptCode: existing }
   }
 
   async function loadSheet(id: string): Promise<void> {
@@ -113,6 +170,7 @@ export const useSheetStore = defineStore('sheet', () => {
     initialized,
     init,
     addSheet,
+    registerNeighbor,
     loadSheet,
     addScan,
     setPrimaryScan,

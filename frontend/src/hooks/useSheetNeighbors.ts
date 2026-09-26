@@ -1,9 +1,10 @@
 import { computed, toValue, type MaybeRefOrGetter } from 'vue'
 import type { Sheet } from '../types/sheet'
+import { NEIGHBOR_DIRECTIONS, type NeighborDirection } from '../types/sheet'
+import { resolveNeighborMap } from '../utils/neighbors'
 import { useSheetStore } from '../stores/sheetStore'
 
-export const NEIGHBOR_DIRECTIONS = ['东', '南', '西', '北', '东北', '西南'] as const
-export type NeighborDirection = (typeof NEIGHBOR_DIRECTIONS)[number]
+export { NEIGHBOR_DIRECTIONS, type NeighborDirection }
 
 export interface NeighborEntry {
   code: string
@@ -23,13 +24,14 @@ export function useSheetNeighbors(sheetId: MaybeRefOrGetter<string>) {
 
   function getNeighborStatus(id: string): NeighborStatus {
     const source = sheetStore.getSheetById(id)
-    const entries = (source?.neighborCodes ?? []).map((code, index) => {
-      const sheet = sheetStore.getSheetByCode(code)
-      return {
-        code,
-        direction: NEIGHBOR_DIRECTIONS[index] ?? NEIGHBOR_DIRECTIONS[0],
-        ...(sheet ? { sheet } : {}),
+    const resolved = source ? resolveNeighborMap(source) : {}
+    const entries = NEIGHBOR_DIRECTIONS.flatMap((direction) => {
+      const code = resolved[direction]
+      if (!code) {
+        return []
       }
+      const sheet = sheetStore.getSheetByCode(code)
+      return [{ code, direction, ...(sheet ? { sheet } : {}) }]
     })
     const missingCodes = entries.filter((entry) => !entry.sheet).map((entry) => entry.code)
 
